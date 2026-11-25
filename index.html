@@ -1,0 +1,370 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#08111f">
+<title>Rohail Scalper Pro VIP</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#08111f;color:#edf4ff;font:15px Arial,sans-serif}
+main{max-width:1050px;margin:auto;padding:15px}
+h2{margin:4px 0}
+.muted{color:#9fb0c8;font-size:12px}
+.panel{background:#101d30;border:1px solid #263750;border-radius:14px;padding:14px;margin:13px 0}
+button{background:#2479e8;color:white;border:0;border-radius:9px;padding:12px 15px;font-weight:bold;margin:4px}
+.secondary{background:#263750}
+button:disabled{opacity:.5}
+.status{color:#9fb0c8;font-size:13px;margin:10px 0}
+.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-top:12px}
+.stat{background:#0b1728;padding:12px;border-radius:9px}
+.stat b{display:block;margin-top:5px}
+.wrap{overflow:auto}
+table{width:100%;border-collapse:collapse;min-width:650px}
+th,td{text-align:left;padding:10px;border-bottom:1px solid #263750;font-size:13px}
+th{color:#9fb0c8}
+.buy{color:#35d49a;font-weight:bold}
+.sell{color:#ff687b;font-weight:bold}
+.wait{color:#ffd166;font-weight:bold}
+.notice{font-size:12px;color:#e9dfc6;background:#29291f;padding:12px;border-radius:9px;line-height:1.6}
+#details{font-size:13px;line-height:1.8;overflow-wrap:anywhere}
+</style>
+</head>
+<body>
+<main>
+<h2>ROHAIL SCALPER PRO</h2>
+<div class="muted">STRICT VIP · FOREX · NEXT 5M CANDLE</div>
+
+<section class="panel">
+<b>Auto Scanner</b><br>
+<button id="start">Start Auto Scan</button>
+<button class="secondary" id="stop">Stop</button>
+<button class="secondary" id="scan">Scan Now</button>
+<div class="status" id="status">Ready. Start scanner to begin.</div>
+<div class="grid">
+<div class="stat"><span class="muted">Forex pairs</span><b>18</b></div>
+<div class="stat"><span class="muted">Timeframes</span><b>5M / 15M / 1H</b></div>
+<div class="stat"><span class="muted">Scan interval</span><b>60 seconds</b></div>
+<div class="stat"><span class="muted">Mode</span><b>Strict confirmation</b></div>
+</div>
+</section>
+
+<section class="panel">
+<b>Live pair decisions</b>
+<div class="wrap">
+<table>
+<thead><tr><th>Pair</th><th>Decision</th><th>Price</th><th>Checks</th><th>Details</th></tr></thead>
+<tbody id="rows"><tr><td colspan="5">Waiting for scan...</td></tr></tbody>
+</table>
+</div>
+</section>
+
+<section class="panel">
+<b id="detailTitle">Pair analysis</b>
+<div id="details" class="muted">Select a pair after scanning.</div>
+</section>
+
+<div class="notice">
+IMPORTANT: This is an educational signal scanner, not an auto-trading bot. It does not place trades. Signals are not guaranteed. The data provider, candle format and prices must be checked against your broker before use. Test on demo first.
+</div>
+</main>
+
+<script>
+const PAIRS=[
+"EURUSD","AUDJPY","CADJPY","EURJPY","EURGBP","GBPUSD",
+"AUDUSD","GBPJPY","USDJPY","GBPAUD","AUDCAD","EURAUD",
+"USDCHF","GBPCAD","USDCAD","EURCAD","GBPCHF","EURCHF"
+];
+
+const API="https://biquote.io/api/";
+const $=id=>document.getElementById(id);
+let timer=null,busy=false;
+const results={};
+
+function average(a){return a.length?a.reduce((x,y)=>x+y,0)/a.length:NaN}
+
+function ema(a,p){
+ if(a.length<p)return NaN;
+ let e=average(a.slice(0,p)),k=2/(p+1);
+ for(let i=p;i<a.length;i++)e=a[i]*k+e*(1-k);
+ return e;
+}
+
+function emaSeries(a,p){
+ let out=Array(a.length).fill(NaN);
+ if(a.length<p)return out;
+ let e=average(a.slice(0,p)),k=2/(p+1);
+ out[p-1]=e;
+ for(let i=p;i<a.length;i++){e=a[i]*k+e*(1-k);out[i]=e}
+ return out;
+}
+
+function rsi(a,p=14){
+ if(a.length<p+1)return NaN;
+ let gain=0,loss=0;
+ for(let i=a.length-p;i<a.length;i++){
+  let d=a[i]-a[i-1];
+  if(d>0)gain+=d;else loss-=d;
+ }
+ if(loss===0)return 100;
+ return 100-100/(1+gain/loss);
+}
+
+function macd(a){
+ let f=emaSeries(a,12),s=emaSeries(a,26),line=[];
+ for(let i=0;i<a.length;i++)if(Number.isFinite(f[i])&&Number.isFinite(s[i]))line.push(f[i]-s[i]);
+ if(line.length<35)return NaN;
+ return line[line.length-1]-ema(line,9);
+}
+
+function normalizeBars(json,tf){
+ let arr=Array.isArray(json)?json:
+  json?.bars||json?.data?.bars||json?.data||
+  json?.candles||json?.result||[];
+ if(!Array.isArray(arr))throw Error("Unknown candle data format");
+
+ let ms={ "5m":300000,"15m":900000,"1h":3600000 }[tf];
+ let now=Date.now();
+
+ let bars=arr.map(x=>{
+  let raw=x.openTime??x.time??x.timestamp??x.t??x.date;
+  let t=typeof raw==="number"?(raw<1e12?raw*1000:raw):Date.parse(raw);
+  return {
+   t,o:Number(x.open??x.o),h:Number(x.high??x.h),
+   l:Number(x.low??x.l),c:Number(x.close??x.c),
+   v:Number(x.tickVolume??x.volume??x.v??0)
+  };
+ }).filter(x=>Number.isFinite(x.t)&&
+  [x.o,x.h,x.l,x.c].every(Number.isFinite))
+ .filter(x=>x.t+ms<=now)
+ .sort((a,b)=>a.t-b.t);
+
+ if(bars.length<60)throw Error("Not enough closed "+tf+" candles");
+ return bars.slice(-220);
+}
+
+async function getBars(pair,tf){
+ let response=await fetch(API+pair+"/ohlc?interval="+tf+"&limit=250",{cache:"no-store"});
+ if(!response.ok)throw Error("Data server HTTP "+response.status);
+ let json=await response.json();
+ return normalizeBars(json,tf);
+}
+
+function getSwings(b){
+ let highs=[],lows=[];
+ for(let i=3;i<b.length-3;i++){
+  let hi=true,lo=true;
+  for(let j=i-3;j<=i+3;j++){
+   if(i===j)continue;
+   if(b[j].h>=b[i].h)hi=false;
+   if(b[j].l<=b[i].l)lo=false;
+  }
+  if(hi)highs.push(b[i].h);
+  if(lo)lows.push(b[i].l);
+ }
+ return {highs,lows};
+}
+
+function structure(b){
+ let s=getSwings(b.slice(0,-1));
+ let last=b.at(-1),prev=b.at(-2);
+ let h=s.highs.at(-1),l=s.lows.at(-1);
+ let up=!!h&&last.c>h;
+ let down=!!l&&last.c<l;
+ let sweepLow=!!l&&prev.l<l&&prev.c>l&&last.c>prev.h;
+ let sweepHigh=!!h&&prev.h>h&&prev.c<h&&last.c<prev.l;
+ let hh=s.highs.length>1&&s.highs.at(-1)>s.highs.at(-2);
+ let hl=s.lows.length>1&&s.lows.at(-1)>s.lows.at(-2);
+ let lh=s.highs.length>1&&s.highs.at(-1)<s.highs.at(-2);
+ let ll=s.lows.length>1&&s.lows.at(-1)<s.lows.at(-2);
+ return {
+  up,down,sweepLow,sweepHigh,
+  trend:hh&&hl?"BULLISH":lh&&ll?"BEARISH":"RANGE"
+ };
+}
+
+function fvg(b){
+ let a=b.at(-3),c=b.at(-1);
+ if(c.l>a.h)return {side:"BUY",lo:a.h,hi:c.l};
+ if(c.h<a.l)return {side:"SELL",lo:c.h,hi:a.l};
+ return null;
+}
+
+function orderBlock(b,side){
+ for(let i=b.length-2;i>=Math.max(2,b.length-12);i--){
+  let x=b[i],y=b[i+1],range=y.h-y.l;
+  if(range<=0||Math.abs(y.c-y.o)<range*.6)continue;
+  if(side==="BUY"&&x.c<x.o&&y.c>y.o&&y.c>x.h)
+   return {lo:x.l,hi:x.h};
+  if(side==="SELL"&&x.c>x.o&&y.c<y.o&&y.c<x.l)
+   return {lo:x.l,hi:x.h};
+ }
+ return null;
+}
+
+function atr(b){
+ let vals=[];
+ for(let i=b.length-14;i<b.length;i++){
+  let x=b[i],p=b[i-1];
+  vals.push(Math.max(x.h-x.l,Math.abs(x.h-p.c),Math.abs(x.l-p.c)));
+ }
+ return average(vals);
+}
+
+function near(price,z,a){
+ return !!z&&Number.isFinite(a)&&
+ price>=z.lo-a*.25&&price<=z.hi+a*.25;
+}
+
+function candleSignal(b){
+ let x=b.at(-1),p=b.at(-2),range=x.h-x.l;
+ if(range<=0)return "NONE";
+ let body=Math.abs(x.c-x.o);
+ let upper=x.h-Math.max(x.o,x.c);
+ let lower=Math.min(x.o,x.c)-x.l;
+ let bull=x.c>x.o&&p.c<p.o&&x.o<=p.c&&x.c>=p.o;
+ let bear=x.c<x.o&&p.c>p.o&&x.o>=p.c&&x.c<=p.o;
+ if(bull||(x.c>x.o&&body/range>.62&&lower/range<.2))return "BUY";
+ if(bear||(x.c<x.o&&body/range>.62&&upper/range<.2))return "SELL";
+ return "NONE";
+}
+
+function analyse(b5,b15,b1){
+ let c=b5.map(x=>x.c),c15=b15.map(x=>x.c),c1=b1.map(x=>x.c);
+ let e20=ema(c,20),e50=ema(c,50),e200=ema(c,200);
+ let e15a=ema(c15,20),e15b=ema(c15,50);
+ let e1a=ema(c1,20),e1b=ema(c1,50);
+ let rv=rsi(c),mh=macd(c),st=structure(b5);
+ let gap=fvg(b5),obB=orderBlock(b5,"BUY"),obS=orderBlock(b5,"SELL");
+ let a=atr(b5),price=b5.at(-1).c,cs=candleSignal(b5);
+ let recent=b5.slice(-30);
+ let midpoint=(Math.max(...recent.map(x=>x.h))+Math.min(...recent.map(x=>x.l)))/2;
+ let discount=price<midpoint,premium=price>midpoint;
+ let volAvg=average(b5.slice(-21,-1).map(x=>x.v));
+ let volumeOK=volAvg>0&&b5.at(-1).v>=volAvg*.8;
+
+ let buy=[
+  ["1H bullish trend",e1a>e1b],
+  ["15M bullish trend",e15a>e15b],
+  ["5M EMA 20/50/200",e20>e50&&e50>e200&&price>e20],
+  ["RSI bullish",rv>50&&rv<72],
+  ["MACD bullish",mh>0],
+  ["Bullish BOS / structure",st.up||st.trend==="BULLISH"],
+  ["Sell-side liquidity sweep",st.sweepLow],
+  ["Bullish Order Block",near(price,obB,a)],
+  ["Bullish FVG",near(price,gap?.side==="BUY"?gap:null,a)],
+  ["Discount zone",discount],
+  ["Bullish candle close",cs==="BUY"],
+  ["Tick-volume support",volumeOK]
+ ];
+
+ let sell=[
+  ["1H bearish trend",e1a<e1b],
+  ["15M bearish trend",e15a<e15b],
+  ["5M EMA 20/50/200",e20<e50&&e50<e200&&price<e20],
+  ["RSI bearish",rv<50&&rv>28],
+  ["MACD bearish",mh<0],
+  ["Bearish BOS / structure",st.down||st.trend==="BEARISH"],
+  ["Buy-side liquidity sweep",st.sweepHigh],
+  ["Bearish Order Block",near(price,obS,a)],
+  ["Bearish FVG",near(price,gap?.side==="SELL"?gap:null,a)],
+  ["Premium zone",premium],
+  ["Bearish candle close",cs==="SELL"],
+  ["Tick-volume support",volumeOK]
+ ];
+
+ let bc=buy.filter(x=>x[1]).length,sc=sell.filter(x=>x[1]).length;
+ let decision=bc===12?"BUY":sc===12?"SELL":"WAIT";
+ return {
+  decision,price,bc,sc,buy,sell,rv,mh,
+  trend1:e1a>e1b?"BULLISH":e1a<e1b?"BEARISH":"FLAT",
+  trend15:e15a>e15b?"BULLISH":e15a<e15b?"BEARISH":"FLAT",
+  structure:st.trend,candle:cs,time:b5.at(-1).t
+ };
+}
+
+async function scanPair(pair){
+ let [b5,b15,b1]=await Promise.all([
+  getBars(pair,"5m"),getBars(pair,"15m"),getBars(pair,"1h")
+ ]);
+ return analyse(b5,b15,b1);
+}
+
+function render(){
+ let body=$("rows");body.innerHTML="";
+ PAIRS.forEach(pair=>{
+  let r=results[pair],tr=document.createElement("tr");
+  if(!r){
+   tr.innerHTML=`<td>${pair}</td><td class="wait">WAIT</td><td>—</td><td>—</td><td>Data unavailable</td>`;
+  }else{
+   tr.innerHTML=`<td><button class="secondary" data-pair="${pair}">${pair}</button></td>
+   <td class="${r.decision.toLowerCase()}">${r.decision}</td>
+   <td>${r.price.toFixed(5)}</td>
+   <td>${r.decision==="BUY"||r.decision==="SELL"?12:Math.max(r.bc,r.sc)}/12</td>
+   <td>${r.decision==="WAIT"?"Confirmation incomplete":"All programmed checks passed"}</td>`;
+  }
+  body.appendChild(tr);
+ });
+ body.querySelectorAll("[data-pair]").forEach(btn=>{
+  btn.addEventListener("click",()=>showDetails(btn.dataset.pair));
+ });
+}
+
+function showDetails(pair){
+ let r=results[pair];if(!r)return;
+ let checks=r.decision==="SELL"?r.sell:r.buy;
+ $("detailTitle").textContent=pair+" — "+r.decision+" for next 5M candle";
+ $("details").innerHTML=
+ `<b>Price:</b> ${r.price.toFixed(5)}<br>
+ <b>1H trend:</b> ${r.trend1}<br>
+ <b>15M trend:</b> ${r.trend15}<br>
+ <b>5M structure:</b> ${r.structure}<br>
+ <b>RSI:</b> ${r.rv.toFixed(2)}<br>
+ <b>MACD:</b> ${r.mh.toFixed(6)}<br>
+ <b>Current closed candle:</b> ${r.candle}<br>
+ <b>Closed candle time:</b> ${new Date(r.time).toLocaleString()}<br><br>
+ ${checks.map(x=>(x[1]?"✅ ":"❌ ")+x[0]).join("<br>")}<br><br>
+ <b>Decision:</b> ${r.decision==="WAIT"?"WAIT — required conditions are missing.":r.decision+" — all programmed conditions aligned, but no outcome is guaranteed."}`;
+}
+
+async function scanAll(){
+ if(busy)return;
+ busy=true;$("scan").disabled=true;
+ let done=0,errors=0;
+ $("status").textContent="Scanning 18 pairs across three timeframes...";
+ let queue=[...PAIRS];
+ async function worker(){
+  while(queue.length){
+   let pair=queue.shift();
+   try{results[pair]=await scanPair(pair)}
+   catch(e){results[pair]=null;errors++;console.log(pair,e)}
+   done++;
+   $("status").textContent=`Scanned ${done}/18 · Data errors: ${errors}`;
+   render();
+  }
+ }
+ await Promise.all([worker(),worker(),worker()]);
+ $("status").textContent=`Scan complete. Successful: ${done-errors}. Errors: ${errors}.`;
+ busy=false;$("scan").disabled=false;
+}
+
+function start(){
+ if(timer)return;
+ $("start").disabled=true;$("stop").disabled=false;
+ $("status").textContent="Auto scanning every 60 seconds.";
+ scanAll();
+ timer=setInterval(scanAll,60000);
+}
+function stop(){
+ if(timer)clearInterval(timer);
+ timer=null;
+ $("start").disabled=false;$("stop").disabled=true;
+ $("status").textContent="Auto scan stopped.";
+}
+$("start").addEventListener("click",start);
+$("stop").addEventListener("click",stop);
+$("scan").addEventListener("click",scanAll);
+</script>
+</body>
+</html>
